@@ -1,5 +1,5 @@
-# Use an official PyTorch image with CUDA support
-FROM nvidia/cuda:11.8.0-runtime-ubuntu20.04
+FROM ubuntu:22.04
+# FROM nvidia/cuda:11.8.0-runtime-ubuntu20.04
 WORKDIR /app
 
 # Set environment variables for non-interactive installations
@@ -34,18 +34,25 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
 
 RUN pip install --upgrade pip
-
-# Install PyTorch with CUDA support
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# Copy the Django app code into the container
-COPY . /app
-
-# Install the Python dependencies
+COPY requirements.txt ./
 RUN pip install -r requirements.txt
+RUN pip install watchdog
+# RUN pip install pipenv==2023.11.14
+
+# Copy Pipenv files to the container
+# COPY Pipfile Pipfile
+# COPY Pipfile.lock Pipfile.lock
+# ENV PIPENV_VENV_IN_PROJECT=1
+# # Install dependencies using Pipenv
+# RUN pipenv install --dev
+# RUN pipenv install watchdog
+# RUN pipenv run pip install celery redis
+# Copy the rest of the Django app code into the container
+COPY . .
 
 # Expose the port the app runs on
 EXPOSE 8000
 
-# Set the command to run the Django app
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Set the command to run the Django app using Pipenv
+# CMD pipenv run python3.11 /app/manage.py migrate && pipenv run python3.11 /app/manage.py runserver 0.0.0.0:8000
+CMD python manage.py migrate && python manage.py runserver 0.0.0.0:8000

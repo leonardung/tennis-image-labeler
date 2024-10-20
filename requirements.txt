@@ -1,11 +1,14 @@
 asgiref==3.8.1
-Django==5.1.2
+django==5.1.2
 django-cors-headers==4.5.0
 numpy==2.1.2
 pillow==11.0.0
 sqlparse==0.5.1
 tzdata==2024.2
+torch==2.5.0
 opencv-python==4.10.0.84
 scipy==1.14.1
 tqdm==4.66.5
 matplotlib==3.9.2
+celery==5.4.0
+redis==5.1.1

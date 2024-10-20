@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  django:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    depends_on:
+      - redis
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+
+  celery:
+    build: .
+    command: celery -A image_labeling_backend worker --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  celery-beat:
+    build: .
+    command: celery -A image_labeling_backend beat --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  # flower:
+  #   build: .
+  #   command: celery -A image_labeling_backend flower --port=5555
+  #   ports:
+  #     - "5555:5555"
+  #   environment:
+  #     - CELERY_BROKER_URL=redis://redis:6379/0
+  #   depends_on:
+  #     - redis

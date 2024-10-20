@@ -108,7 +108,7 @@ def read_and_process_video(path_video, model, device, output_video_path, fps):
     out.release()
 
 
-def process_images(images, model, device):
+def process_images(images):
     """Process a list of PIL images and return a list of coordinates (x, y)
     :params
         images: list of PIL images
@@ -118,7 +118,16 @@ def process_images(images, model, device):
         List of (x, y) coordinates for detected points in each image
     """
     # Convert images from PIL to OpenCV format
-
+    model = BallTrackerNet()
+    device = "cpu"
+    model.load_state_dict(
+        torch.load(
+            "ml_models/tennis_ball_detection/best_epoch.pth",
+            map_location=device,
+        )
+    )
+    model = model.to(device)
+    model.eval()
     images_cv = [
         cv2.cvtColor(np.array(Image.open(image)), cv2.COLOR_RGB2BGR) for image in images
     ]

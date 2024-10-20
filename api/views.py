@@ -1,63 +1,73 @@
 # api/views.py
-import io
-import random
-import PIL.Image
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.core.handlers.wsgi import WSGIRequest
-import json
-import os
-import PIL
-import numpy as np
-import torch
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 
-from ml_models.tennis_ball_detection.inter_on_video import process_images
-from ml_models.tennis_ball_detection.model import BallTrackerNet
+from .tasks import process_images_task
+
+# from .tasks import process_images_task
+
+
+# @csrf_exempt
+# def get_coordinates(request: WSGIRequest):
+#     if request.method == "POST":
+#         images = request.FILES.getlist("images")
+#         coordinates_dict = {}
+
+#         coordinates = process_images(images)
+
+#         for file, coordinate in zip(images, coordinates):
+#             image_name = file.name
+#             if coordinate[0] and coordinate[1]:
+#                 coordinates_dict[image_name] = {"x": coordinate[0], "y": coordinate[1]}
+
+#         return JsonResponse({"coordinates": coordinates_dict})
+#     return JsonResponse({"status": "error"}, status=400)
 
 
 @csrf_exempt
 def get_coordinates(request: WSGIRequest):
     if request.method == "POST":
-        buffer = io.BytesIO()
-        for chunk in request:
-            buffer.write(chunk)
-        buffer.seek(0)
-        images = split_images(buffer)
+        images = request.FILES.getlist("images")
+        saved_image_paths = []
 
-        coordinates_dict = {}
-        model = BallTrackerNet()
-        device = "cuda"
-        model.load_state_dict(
-            torch.load(
-                r"ml_models\tennis_ball_detection\best_epoch.pth",
-                map_location=device,
+        # Save images temporarily
+        for file in images:
+            file_path = default_storage.save(
+                f"temp_images/{file.name}", ContentFile(file.read())
             )
-        )
-        model = model.to(device)
-        model.eval()
-        coordinates = process_images(images, model, device)
+            saved_image_paths.append(file_path)
+        print(len(saved_image_paths))
+        print(saved_image_paths)
 
-        for file, coordinate in zip(images, coordinates):
-            image_name = file.name
-            if coordinate[0] and coordinate[1]:
-                coordinates_dict[image_name] = {"x": coordinate[0], "y": coordinate[1]}
+        # Push the task to the queue
+        task = process_images_task.delay(saved_image_paths)
 
-        return JsonResponse({"coordinates": coordinates_dict})
+        # Return the task ID to the client
+        return JsonResponse({"task_id": task.id})
+
     return JsonResponse({"status": "error"}, status=400)
 
 
-def split_images(buffer):
-    """
-    Split the buffer into separate images based on a custom delimiter.
-    Example assumes that each image is separated by a specific byte sequence.
-    """
-    delimiter = b"--image-separator--"  # Custom delimiter to separate images
-    image_chunks = buffer.getvalue().split(delimiter)
+from celery.result import AsyncResult
+from django.core.cache import cache
 
-    images = []
-    for image_chunk in image_chunks:
-        if image_chunk:
-            image_io = io.BytesIO(image_chunk)
-            images.append(image_io)
 
-    return images
+@csrf_exempt
+def check_task_status(request, task_id):
+    result = AsyncResult(task_id)
+
+    if result.state == "PENDING":
+        response = {"status": "pending"}
+    elif result.state == "SUCCESS":
+        # Retrieve the result from the cache
+        coordinates_dict = cache.get(f"task_result_{task_id}")
+        response = {"status": "success", "coordinates": coordinates_dict}
+    elif result.state == "FAILURE":
+        response = {"status": "failed", "error": str(result.info)}
+    else:
+        response = {"status": result.state}
+
+    return JsonResponse(response)
