@@ -20,26 +20,29 @@ def process_frame(frame, model, device, ball_track, dists):
     """
     height = 360
     width = 640
-
+    run_inference = True
     img = cv2.resize(frame, (width, height))
-    img_prev = (
-        cv2.resize(ball_track[-1][1], (width, height))
-        if ball_track[-1][1] is not None
-        else np.zeros((height, width, 3))
-    )
-    img_preprev = (
-        cv2.resize(ball_track[-2][1], (width, height))
-        if ball_track[-2][1] is not None
-        else np.zeros((height, width, 3))
-    )
-    imgs = np.concatenate((img, img_prev, img_preprev), axis=2)
-    imgs = imgs.astype(np.float32) / 255.0
-    imgs = np.rollaxis(imgs, 2, 0)
-    inp = np.expand_dims(imgs, axis=0)
+    if ball_track[-1][1] is not None:
+        img_prev = cv2.resize(ball_track[-1][1], (width, height))
+    else:
+        np.zeros((height, width, 3))
+        run_inference = False
+    if ball_track[-2][1] is not None:
+        img_preprev = cv2.resize(ball_track[-2][1], (width, height))
+    else:
+        np.zeros((height, width, 3))
+        run_inference = False
 
-    out = model(torch.from_numpy(inp).float().to(device))
-    output = out.argmax(dim=1).detach().cpu().numpy()
-    x_pred, y_pred = postprocess(output)
+    if run_inference:
+        imgs = np.concatenate((img, img_prev, img_preprev), axis=2)
+        imgs = imgs.astype(np.float32) / 255.0
+        imgs = np.rollaxis(imgs, 2, 0)
+        inp = np.expand_dims(imgs, axis=0)
+        out = model(torch.from_numpy(inp).float().to(device))
+        output = out.argmax(dim=1).detach().cpu().numpy()
+        x_pred, y_pred = postprocess(output)
+    else:
+        x_pred, y_pred = None, None
     ball_track.append(((x_pred, y_pred), frame))
 
     if ball_track[-1][0][0] and ball_track[-2][0][0]:

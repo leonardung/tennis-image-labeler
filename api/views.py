@@ -1,5 +1,7 @@
 # api/views.py
+from io import BytesIO
 import json
+import base64
 import urllib
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
@@ -7,6 +9,7 @@ from django.core.handlers.wsgi import WSGIRequest
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from celery.result import AsyncResult
+from django.core.files.uploadedfile import InMemoryUploadedFile
 
 from api.models import Coordinate
 from ml_models.tennis_ball_detection.inter_on_video import process_images
@@ -39,20 +42,28 @@ def save_coordinates(request):
     if request.method == "POST":
         try:
             data = json.loads(request.body)
-            folder_path = data.get("folder_path")
-            image_name = data.get("image_name")
-            x = data.get("x")
-            y = data.get("y")
+            coordinates_list = data.get("coordinates", [])
 
-            if not folder_path or not image_name or x is None or y is None:
-                return HttpResponseBadRequest("Missing required fields")
+            if not coordinates_list:
+                return HttpResponseBadRequest("Missing coordinates data")
 
-            # Update or create the coordinate in the database
-            Coordinate.objects.update_or_create(
-                folder_path=folder_path,
-                image_name=image_name,
-                defaults={"x": x, "y": y},
-            )
+            for coordinate in coordinates_list:
+                folder_path = coordinate.get("folder_path")
+                image_name = coordinate.get("image_name")
+                x = coordinate.get("x")
+                y = coordinate.get("y")
+
+                if not folder_path or not image_name or x is None or y is None:
+                    return HttpResponseBadRequest(
+                        "Missing required fields in coordinate"
+                    )
+
+                # Update or create the coordinate in the database
+                Coordinate.objects.update_or_create(
+                    folder_path=folder_path,
+                    image_name=image_name,
+                    defaults={"x": x, "y": y},
+                )
 
             return JsonResponse({"status": "success"})
         except json.JSONDecodeError:
@@ -62,36 +73,18 @@ def save_coordinates(request):
 
 
 @csrf_exempt
-def calculate_coordinates_(request: WSGIRequest):
-    if request.method == "POST":
-        images = request.FILES.getlist("images")
-        coordinates_dict = {}
-
-        coordinates = process_images(images)
-
-        for file, coordinate in zip(images, coordinates):
-            image_name = file.name
-            if coordinate[0] and coordinate[1]:
-                coordinates_dict[image_name] = {"x": coordinate[0], "y": coordinate[1]}
-
-        return JsonResponse({"coordinates": coordinates_dict})
-    return JsonResponse({"status": "error"}, status=400)
-
-
-@csrf_exempt
 def calculate_coordinates(request: WSGIRequest):
     if request.method == "POST":
         images = request.FILES.getlist("images")
         folder_path = request.POST.get("folder_path")
-        saved_image_paths = []
+        image_files = []
+        image_names = []
 
         for file in images:
-            file_path = default_storage.save(
-                f"temp_images/{file.name}", ContentFile(file.read())
-            )
-            saved_image_paths.append(file_path)
-
-        task = process_images_task.delay(saved_image_paths, folder_path)
+            if isinstance(file, InMemoryUploadedFile):
+                image_files.append(base64.b64encode(file.read()).decode("utf-8"))
+                image_names.append(file.name)
+        task = process_images_task.delay(image_files, image_names, folder_path)
 
         return JsonResponse({"task_id": task.id})
     return JsonResponse({"status": "error"}, status=400)
