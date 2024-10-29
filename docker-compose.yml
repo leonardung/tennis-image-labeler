@@ -11,6 +11,11 @@ services:
     #   - NVIDIA_VISIBLE_DEVICES=all
     depends_on:
       - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=image_labeling_backend.settings
+    command: >
+      sh -c "python manage.py migrate &&
+             daphne -b 0.0.0.0 -p 8000 image_labeling_backend.asgi:application"
     # deploy:
     #   resources:
     #     reservations:

@@ -6,8 +6,6 @@ import urllib
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.core.handlers.wsgi import WSGIRequest
-from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
 from celery.result import AsyncResult
 from django.core.files.uploadedfile import InMemoryUploadedFile
 
@@ -18,6 +16,8 @@ from .tasks import process_images_task
 
 
 # from .tasks import process_images_task
+
+
 
 
 @csrf_exempt
@@ -85,6 +85,7 @@ def calculate_coordinates(request: WSGIRequest):
                 image_files.append(base64.b64encode(file.read()).decode("utf-8"))
                 image_names.append(file.name)
         task = process_images_task.delay(image_files, image_names, folder_path)
+        print(image_names)
 
         return JsonResponse({"task_id": task.id})
     return JsonResponse({"status": "error"}, status=400)

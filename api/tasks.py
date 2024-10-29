@@ -1,5 +1,5 @@
 from io import BytesIO
-from celery import shared_task
+from celery import shared_task, Celery
 from ml_models.tennis_ball_detection.inter_on_video import process_images
 import os
 from .models import Coordinate  # Import the model here to avoid circular imports
