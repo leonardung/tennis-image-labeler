@@ -36,6 +36,7 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
 RUN pip install --upgrade pip
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+RUN pip install torch==2.5.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 RUN pip install watchdog
 # RUN pip install pipenv==2023.11.14
 

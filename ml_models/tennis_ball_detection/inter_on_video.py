@@ -122,7 +122,7 @@ def process_images(images):
     """
     # Convert images from PIL to OpenCV format
     model = BallTrackerNet()
-    device = "cpu"
+    device = "cuda"
     model.load_state_dict(
         torch.load(
             "ml_models/tennis_ball_detection/best_epoch.pth",

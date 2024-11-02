@@ -1,58 +1,21 @@
 version: '3.8'
 
 services:
-  django:
-    build: .
-    volumes:
-      - .:/app
-    ports:
-      - "8000:8000"
-    # environment:
-    #   - NVIDIA_VISIBLE_DEVICES=all
-    depends_on:
-      - redis
-    environment:
-      - DJANGO_SETTINGS_MODULE=image_labeling_backend.settings
-    command: >
-      sh -c "python manage.py migrate &&
-             daphne -b 0.0.0.0 -p 8000 image_labeling_backend.asgi:application"
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - capabilities: [gpu]
-
-  celery:
-    build: .
-    command: celery -A image_labeling_backend worker --loglevel=info
-    volumes:
-      - .:/app
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-
-  celery-beat:
-    build: .
-    command: celery -A image_labeling_backend beat --loglevel=info
-    volumes:
-      - .:/app
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+  # django:
+  #   build: .
+  #   volumes:
+  #     - .:/app
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - redis
+  #   environment:
+  #     - DJANGO_SETTINGS_MODULE=image_labeling_backend.settings
+  #   command: >
+  #     sh -c "python manage.py migrate &&
+  #            daphne -b 0.0.0.0 -p 8000 image_labeling_backend.asgi:application"
 
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
-
-  # flower:
-  #   build: .
-  #   command: celery -A image_labeling_backend flower --port=5555
-  #   ports:
-  #     - "5555:5555"
-  #   environment:
-  #     - CELERY_BROKER_URL=redis://redis:6379/0
-  #   depends_on:
-  #     - redis

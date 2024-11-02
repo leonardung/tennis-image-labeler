@@ -1,23 +1,88 @@
 # api/views.py
-from io import BytesIO
 import json
 import base64
+import os
 import urllib
+from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 from django.core.handlers.wsgi import WSGIRequest
 from celery.result import AsyncResult
 from django.core.files.uploadedfile import InMemoryUploadedFile
 
-from api.models import Coordinate
+from api.models import Coordinate, ImageModel
 from ml_models.tennis_ball_detection.inter_on_video import process_images
 
 from .tasks import process_images_task
 
 
-# from .tasks import process_images_task
+@csrf_exempt
+def upload_images(request):
+    if request.method == "POST":
+        folder_path = request.POST.get("folder_path", "default_folder")
+        images = request.FILES.getlist("images")
+        image_urls = []
+        coordinates = {}  # Implement logic to get coordinates if needed
+
+        for image in images:
+            # Construct file path within media directory
+            relative_path = folder_path + "/" + image.name
+            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+            # Save the file
+            with open(full_path, "wb+") as destination:
+                for chunk in image.chunks():
+                    destination.write(chunk)
+
+            # Save a reference in the database
+            image_record = ImageModel.objects.create(
+                image=relative_path,
+                folder_path=folder_path,
+            )
+
+            # Collect the image URL
+            image_url = request.build_absolute_uri(settings.MEDIA_URL + relative_path)
+            image_urls.append(image_url)
+
+        # Return a JSON response with image URLs and coordinates
+        return JsonResponse(
+            {
+                "image_urls": image_urls,
+                "coordinates": coordinates,
+            }
+        )
+    else:
+        return JsonResponse({"error": "Invalid request method"}, status=400)
 
 
+# def upload_images(request):
+#     if request.method == "POST":
+#         folder_path = request.POST.get("folder_path", "default_folder")
+#         images = request.FILES.getlist("images")
+#         image_data = []
+
+#         for image in images:
+#             # ... [Saving image code as before] ...
+
+#             # Assume you have logic to get coordinates for each image
+#             coordinates = get_coordinates_for_image(image_record)
+
+#             image_data.append(
+#                 {
+#                     "url": request.build_absolute_uri(
+#                         settings.MEDIA_URL + relative_path
+#                     ),
+#                     "filename": image.name,
+#                     "coordinates": coordinates,
+#                 }
+#             )
+
+#         return JsonResponse({"images": image_data})
+#     else:
+#         return JsonResponse({"error": "Invalid request method"}, status=400)
 
 
 @csrf_exempt
