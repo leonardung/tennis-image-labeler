@@ -111,7 +111,7 @@ def read_and_process_video(path_video, model, device, output_video_path, fps):
     out.release()
 
 
-def process_images(images):
+async def process_images(images):
     """Process a list of PIL images and return a list of coordinates (x, y)
     :params
         images: list of PIL images
@@ -131,16 +131,16 @@ def process_images(images):
     )
     model = model.to(device)
     model.eval()
-    images_cv = [
-        cv2.cvtColor(np.array(Image.open(image)), cv2.COLOR_RGB2BGR) for image in images
-    ]
 
-    coordinates_list = []
     ball_track = [((None, None), None)] * 2
     dists = [-1] * 2
 
-    with tqdm(total=len(images_cv), desc="Processing Images", unit="image") as pbar:
-        for image in images_cv:
+    with tqdm(total=len(images), desc="Processing Images", unit="image") as pbar:
+        for image_file in images:
+            image = cv2.cvtColor(
+                np.array(Image.open(image_file.image.path)), cv2.COLOR_RGB2BGR
+            )
+
             # Resize the image if needed
             image = cv2.resize(image, (1280, 720))
             # Process the frame and update ball_track and dists
@@ -148,16 +148,13 @@ def process_images(images):
             frame_num = len(ball_track) - 1
             # Extract coordinates of detected points
             for i in range(1):
-                if frame_num - i > 0:
-                    if ball_track[frame_num - i][0][0]:
-                        x = int(ball_track[frame_num - i][0][0])
-                        y = int(ball_track[frame_num - i][0][1])
-                        coordinates_list.append((x, y))
-                    else:
-                        coordinates_list.append((None, None))
+                if frame_num - i > 0 and ball_track[frame_num - i][0][0]:
+                    x = int(ball_track[frame_num - i][0][0])
+                    y = int(ball_track[frame_num - i][0][1])
+                    yield image_file, (x, y)
+                else:
+                    yield image_file, (None, None)
             pbar.update(1)
-
-    return coordinates_list
 
 
 if __name__ == "__main__":

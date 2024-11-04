@@ -13,9 +13,4 @@ urlpatterns = [
     path("get-coordinates/", get_coordinates, name="get-coordinates"),
     path("save-coordinates/", save_coordinates, name="save-coordinates"),
     path("upload-images/", upload_images, name="upload_images"),
-    # re_path(
-    #     r"^check-task-status/(?P<pk>[^/]+)/$",
-    #     check_celery_task_status,
-    #     name="check_celery_task_status",
-    # ),
 ]

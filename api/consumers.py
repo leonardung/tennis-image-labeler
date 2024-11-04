@@ -1,11 +1,15 @@
 from channels.generic.websocket import AsyncWebsocketConsumer
 import json
-import base64
-from io import BytesIO
-from channels.db import database_sync_to_async
+from asgiref.sync import sync_to_async
+import cv2
+import numpy as np
+from PIL import Image
 
-from api.models import Coordinate
-from ml_models.tennis_ball_detection.inter_on_video import process_images
+import torch
+from tqdm import tqdm
+from api.models import Coordinate, ImageModel
+from ml_models.tennis_ball_detection.model import BallTrackerNet
+from ml_models.tennis_ball_detection.inter_on_video import process_frame
 
 
 class ImageConsumer(AsyncWebsocketConsumer):
@@ -15,46 +19,58 @@ class ImageConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         pass
 
-    async def receive(self, text_data=None, bytes_data=None):
-        if text_data:
-            data = json.loads(text_data)
-            images_data = data.get('images', [])
-            folder_path = data.get('folder_path', '')
-            image_files = []
-            image_names = []
+    async def receive(self, text_data):
+        data = json.loads(text_data)
+        folder_path = data.get("folder_path")
 
-            for image_dict in images_data:
-                image_name = image_dict['name']
-                image_content = image_dict['content']
-                image_bytes = base64.b64decode(image_content)
-                image_files.append(BytesIO(image_bytes))
-                image_names.append(image_name)
-
-            # Process images and save results asynchronously
-            coordinates_dict = await self.process_images_and_save(
-                image_files, image_names, folder_path
+        if folder_path:
+            image_records = await sync_to_async(
+                lambda: list(ImageModel.objects.filter(folder_path=folder_path))
+            )()
+            model = BallTrackerNet()
+            device = "cuda"
+            model.load_state_dict(
+                torch.load(
+                    "ml_models/tennis_ball_detection/best_epoch.pth",
+                    map_location=device,
+                )
             )
-
-            # Send back the result via WebSocket
-            await self.send(text_data=json.dumps({
-                'status': 'success',
-                'coordinates': coordinates_dict,
-            }))
-        else:
-            await self.send(text_data=json.dumps({'status': 'error', 'message': 'No data received'}))
-
-    @database_sync_to_async
-    def process_images_and_save(self, image_files, image_names, folder_path):
-        coordinates = process_images(image_files)
-        coordinates_dict = {}
-
-        for image_name, coordinate in zip(image_names, coordinates):
-            if coordinate[0] and coordinate[1]:
-                coordinates_dict[image_name] = {"x": coordinate[0], "y": coordinate[1]}
-                Coordinate.objects.update_or_create(
-                    folder_path=folder_path,
-                    image_name=image_name,
-                    defaults={"x": coordinate[0], "y": coordinate[1]},
+            model = model.to(device)
+            model.eval()
+            ball_track = [((None, None), None)] * 2
+            dists = [-1] * 2
+            for image_file in tqdm(image_records):
+                image = cv2.cvtColor(
+                    np.array(Image.open(image_file.image.path)), cv2.COLOR_RGB2BGR
                 )
 
-        return coordinates_dict
+                image = cv2.resize(image, (1280, 720))
+                ball_track, dists = process_frame(
+                    image, model, device, ball_track, dists
+                )
+                frame_num = len(ball_track) - 1
+                for i in range(1):
+                    if frame_num - i > 0 and ball_track[frame_num - i][0][0]:
+                        x = int(ball_track[frame_num - i][0][0])
+                        y = int(ball_track[frame_num - i][0][1])
+                        coordinates = (x, y)
+                    else:
+                        coordinates = (None, None)
+                if coordinates[0] is not None and coordinates[1] is not None:
+                    await sync_to_async(Coordinate.objects.update_or_create)(
+                        image=image_file, x=coordinates[0], y=coordinates[1]
+                    )
+                await self.send(
+                    text_data=json.dumps(
+                        {
+                            "status": "success",
+                            "coordinates": {
+                                "image_name": image_file.image.name.split("/")[-1],
+                                "x": coordinates[0],
+                                "y": coordinates[1],
+                            },
+                            "processed_image_id": image_file.id,
+                        }
+                    )
+                )
+            await self.send(text_data=json.dumps({"status": "complete"}))
