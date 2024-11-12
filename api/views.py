@@ -1,188 +1,193 @@
-# api/views.py
-import base64
-import json
 import os
-import urllib
+import cv2
+import numpy as np
+import torch
 from django.conf import settings
-from django.http import JsonResponse, HttpResponseBadRequest
-from django.views.decorators.csrf import csrf_exempt
-from django.core.handlers.wsgi import WSGIRequest
-from celery.result import AsyncResult
-from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import transaction
-
+from rest_framework import viewsets, status, filters
+from rest_framework.decorators import action
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.response import Response
+from segment_anything import SamPredictor, sam_model_registry
 from api.models import Coordinate, ImageModel
-from api.serializers import CoordinateSerializer, ImageModelSerializer
+from api.serializers import ImageModelSerializer, CoordinateSerializer
 
-from .tasks import process_images_task
-
-
-@csrf_exempt
-def upload_images(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=400)
-
-    folder_path = request.POST.get("folder_path", "default_folder")
-    images = request.FILES.getlist("images")
-    image_data = []
-
-    for image in images:
-        relative_path = folder_path + "/" + image.name
-        full_path = settings.MEDIA_ROOT + "/" + relative_path
-
-        image_exists = ImageModel.objects.filter(image=relative_path).first()
-
-        if image_exists:
-            image_record = image_exists
-        else:
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, "wb+") as destination:
-                for chunk in image.chunks():
-                    destination.write(chunk)
-
-            image_record = ImageModel.objects.create(
-                image=relative_path,
-                folder_path=folder_path,
-            )
-        coordinates_qs = image_record.coordinates.all()
-        coordinates = [{"x": coord.x, "y": coord.y} for coord in coordinates_qs]
-        coordinates = coordinates[0] if coordinates else []  # only 1 coord for now
-        image_data.append(
-            {
-                "id": image_record.id,
-                "url": request.build_absolute_uri(settings.MEDIA_URL + relative_path),
-                "filename": image.name,
-                "coordinates": coordinates,
-            }
-        )
-
-    return JsonResponse({"images": image_data})
+sam = None
+predictor = None
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@csrf_exempt
-def get_coordinates(request):
-    if request.method == "GET":
-        folder_path = request.GET.get("folder_path")
-        if not folder_path:
-            return HttpResponseBadRequest("Missing folder_path parameter")
+class ImageViewSet(viewsets.ModelViewSet):
+    queryset = ImageModel.objects.all()
+    serializer_class = ImageModelSerializer
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["folder_path"]
 
-        # Retrieve all images in the specified folder
-        images = ImageModel.objects.filter(folder_path=folder_path).prefetch_related(
-            "coordinates"
-        )
-
-        # Construct the response data
-        coordinates_data = {}
-        for image in images:
-            image_name = image.image.name.split("/")[-1].split("\\")[-1]
-            coords = image.coordinates.all()
-            if coords.exists():
-                coordinates_data[image_name] = [
-                    {"x": coord.x, "y": coord.y} for coord in coords
-                ]
-
-        return JsonResponse({"coordinates": coordinates_data})
-    else:
-        return HttpResponseBadRequest("Invalid request method")
-
-
-@csrf_exempt
-def save_coordinates(request):
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=400)
-
-    # Parse JSON data from the request body
-    try:
-        data = json.loads(request.body)
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON data"}, status=400)
-
-    coordinates_list = data.get("coordinates", [])
-    if not coordinates_list:
-        return JsonResponse({"error": "No coordinates provided"}, status=400)
-
-    # Group coordinates by image to handle multiple coordinates per image
-    coordinates_by_image = {}
-    for coord_data in coordinates_list:
-        folder_path = coord_data.get("folder_path")
-        image_name = coord_data.get("image_name")
-        x = coord_data.get("x")
-        y = coord_data.get("y")
-
-        if not folder_path or not image_name or x is None or y is None:
-            return JsonResponse({"error": "Missing data in coordinates"}, status=400)
-
-        image_key = (folder_path, image_name)
-        if image_key not in coordinates_by_image:
-            coordinates_by_image[image_key] = []
-
-        coordinates_by_image[image_key].append({"x": x, "y": y})
-
-    with transaction.atomic():
-        for (folder_path, image_name), coords in coordinates_by_image.items():
-            relative_path = os.path.join(folder_path, image_name)
-
-            # Try to retrieve the ImageModel instance
-            try:
-                image = ImageModel.objects.get(image=relative_path)
-            except ImageModel.DoesNotExist:
-                return JsonResponse(
-                    {"error": f"Image not found: {relative_path}"}, status=404
-                )
-
-            # Clear existing coordinates for this image
-            image.coordinates.all().delete()
-
-            # Create new Coordinate instances
-            coordinate_objs = [
-                Coordinate(image=image, x=coord["x"], y=coord["y"]) for coord in coords
-            ]
-
-            # Bulk create the coordinates for efficiency
-            Coordinate.objects.bulk_create(coordinate_objs)
-
-    return JsonResponse({"status": "success"}, status=200)
-
-
-@csrf_exempt
-def calculate_coordinates(request: WSGIRequest):
-    if request.method == "POST":
+    def create(self, request, *args, **kwargs):
+        folder_path = request.data.get("folder_path", "default_folder")
         images = request.FILES.getlist("images")
-        folder_path = request.POST.get("folder_path")
-        image_files = []
-        image_names = []
+        image_data = []
 
-        for file in images:
-            if isinstance(file, InMemoryUploadedFile):
-                image_files.append(base64.b64encode(file.read()).decode("utf-8"))
-                image_names.append(file.name)
-        task = process_images_task.delay(image_files, image_names, folder_path)
+        for image in images:
+            relative_path = os.path.join(folder_path, image.name)
+            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
 
-        return JsonResponse({"task_id": task.id})
-    return JsonResponse({"status": "error"}, status=400)
+            image_exists = ImageModel.objects.filter(image=relative_path).first()
 
+            if image_exists:
+                image_record = image_exists
+            else:
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, "wb+") as destination:
+                    for chunk in image.chunks():
+                        destination.write(chunk)
 
-@csrf_exempt
-def check_celery_task_status(request, pk: str):
-    """Check status of a running Celery task"""
-    task_id = urllib.parse.unquote(pk)
-    task = AsyncResult(task_id)
-
-    if task.ready():
-        if task.successful():
-            result = task.result
-            return JsonResponse(
+                image_record = ImageModel.objects.create(
+                    image=relative_path,
+                    folder_path=folder_path,
+                )
+            coordinates_qs = image_record.coordinates.all()
+            coordinates = [{"x": coord.x, "y": coord.y} for coord in coordinates_qs]
+            coordinates = coordinates[0] if coordinates else []
+            image_data.append(
                 {
-                    "status": "success",
-                    "result": result,
+                    "id": image_record.id,
+                    "url": request.build_absolute_uri(
+                        settings.MEDIA_URL + relative_path
+                    ),
+                    "filename": image.name,
+                    "coordinates": coordinates,
                 }
             )
-        elif task.failed():
-            return JsonResponse(
-                {
-                    "status": "failed",
-                    "error": str(task.result),  # task.result contains the exception
-                }
+
+        return Response({"images": image_data})
+
+    @action(detail=False, methods=["get"])
+    def folder_coordinates(self, request):
+        folder_path = request.query_params.get("folder_path")
+        if not folder_path:
+            return Response({"error": "folder_path query parameter is required"}, status=400)
+        
+        images = ImageModel.objects.filter(folder_path=folder_path)
+        all_coordinates = []
+        for image in images:
+            coordinates = image.coordinates.all()
+            serializer = CoordinateSerializer(coordinates, many=True)
+            all_coordinates.extend(serializer.data)
+
+        return Response(all_coordinates)
+
+    @action(detail=False, methods=["post"])
+    def save_all_coordinates(self, request):
+        all_coordinates = request.data.get("all_coordinates", [])
+        if not all_coordinates:
+            return Response(
+                {"error": "No coordinates provided"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-    else:
-        return JsonResponse({"status": "pending"})
+
+        with transaction.atomic():
+            for item in all_coordinates:
+                image_id = item.get("image_id")
+                coordinates = item.get("coordinates", [])
+
+                # Validate coordinates exist
+                if not coordinates:
+                    continue
+
+                # Fetch the image
+                try:
+                    image = ImageModel.objects.get(id=image_id)
+                except ImageModel.DoesNotExist:
+                    continue
+
+                # Delete existing coordinates for the image
+                image.coordinates.all().delete()
+
+                # Create new coordinate objects
+                coordinate_objs = [
+                    Coordinate(image=image, x=coord["x"], y=coord["y"])
+                    for coord in coordinates
+                ]
+                Coordinate.objects.bulk_create(coordinate_objs)
+
+        return Response({"status": "success"}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"])
+    def generate_mask(self, request, pk=None):
+        image = self.get_object()
+        global sam, predictor
+        if sam is None:
+            self.load_model()
+        data = request.data
+        coordinates = data.get("coordinates")
+        prev_mask = data.get("mask_input")
+
+        image_path = image.image.path
+        img = cv2.imread(image_path)
+        predictor.set_image(img)
+
+        input_points = np.array([[coord["x"], coord["y"]] for coord in coordinates])
+        input_labels = np.array(
+            [1 if coord.get("include", True) else 0 for coord in coordinates]
+        )
+
+        mask_input = None
+        if prev_mask:
+            mask_input = np.array(prev_mask)
+
+        masks, _, _ = predictor.predict(
+            point_coords=input_points,
+            point_labels=input_labels,
+            mask_input=mask_input[None, :, :] if mask_input is not None else None,
+            multimask_output=False,
+        )
+
+        binary_mask = masks[0].astype(np.uint8)
+        return Response({"mask": binary_mask.tolist()})
+
+    def load_model(self):
+        global sam, predictor
+        if sam is None:
+            try:
+                sam_checkpoint = "./ml_models/sam_models/sam_vit_h_4b8939.pth"
+                model_type = "vit_h"
+                sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+                sam.to(device=device)
+                predictor = SamPredictor(sam)
+            except Exception as e:
+                raise e
+
+
+class ModelManagerViewSet(viewsets.ViewSet):
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    @action(detail=False, methods=["post"])
+    def load_model(self, request):
+        global sam, predictor
+        if sam is None:
+            try:
+                sam_checkpoint = "./ml_models/sam_models/sam_vit_h_4b8939.pth"
+                model_type = "vit_h"
+                sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+                sam.to(device=device)
+                predictor = SamPredictor(sam)
+                return Response({"message": "Model loaded successfully"})
+            except Exception as e:
+                return Response(
+                    {"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        else:
+            return Response({"message": "Model is already loaded"})
+
+    @action(detail=False, methods=["post"])
+    def unload_model(self, request):
+        global sam, predictor
+        if sam is not None:
+            sam = None
+            predictor = None
+            torch.cuda.empty_cache()
+            return Response({"message": "Model unloaded successfully"})
+        else:
+            return Response({"message": "Model is not loaded"})
