@@ -2,4 +2,4 @@
 
 echo building docker images and starting docker containers...
 docker compose up --build -d
-docker compose watch
+daphne -b 0.0.0.0 -p 8000 image_labeling_backend.asgi:application

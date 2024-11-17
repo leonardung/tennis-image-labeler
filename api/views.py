@@ -67,8 +67,10 @@ class ImageViewSet(viewsets.ModelViewSet):
     def folder_coordinates(self, request):
         folder_path = request.query_params.get("folder_path")
         if not folder_path:
-            return Response({"error": "folder_path query parameter is required"}, status=400)
-        
+            return Response(
+                {"error": "folder_path query parameter is required"}, status=400
+            )
+
         images = ImageModel.objects.filter(folder_path=folder_path)
         all_coordinates = []
         for image in images:
@@ -135,12 +137,17 @@ class ImageViewSet(viewsets.ModelViewSet):
 
         mask_input = None
         if prev_mask:
-            mask_input = np.array(prev_mask)
+            mask_input = np.array(prev_mask, dtype=np.float32)
+            mask_input = cv2.resize(
+                mask_input, (256, 256), interpolation=cv2.INTER_LINEAR
+            )
+            mask_input = np.expand_dims(mask_input, axis=0)
+            mask_input = mask_input.astype(np.uint8)
 
         masks, _, _ = predictor.predict(
             point_coords=input_points,
             point_labels=input_labels,
-            mask_input=mask_input[None, :, :] if mask_input is not None else None,
+            mask_input=mask_input if mask_input is not None else None,
             multimask_output=False,
         )
 
