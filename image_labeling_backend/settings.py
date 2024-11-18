@@ -41,6 +41,8 @@ INSTALLED_APPS = [
     "corsheaders",
     "api",
     "channels",
+    "rest_framework",
+    "rest_framework.authtoken",
 ]
 
 MIDDLEWARE = [
@@ -144,6 +146,13 @@ CHANNEL_LAYERS = {
             "hosts": [("127.0.0.1", 6379)],
         },
     },
+}
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework.authentication.SessionAuthentication",  # For session-based authentication
+        "rest_framework.authentication.TokenAuthentication",  # For token-based authentication
+    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
 }
 
 MEDIA_URL = "/media/"

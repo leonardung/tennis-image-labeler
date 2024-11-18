@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from api.models import ImageModel, Coordinate
+from api.models import ImageModel, Coordinate, Project
 
 
 class CoordinateSerializer(serializers.ModelSerializer):
@@ -18,4 +18,12 @@ class ImageModelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ImageModel
-        fields = ["id", "image", "folder_path", "uploaded_at", "coordinates"]
+        fields = ["id", "image", "uploaded_at", "coordinates", "is_label"]
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    images = ImageModelSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'type', 'images']

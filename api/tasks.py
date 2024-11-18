@@ -29,4 +29,5 @@ def process_images_task(encoded_image_files, image_names, folder_path):
                 image_name=image_name,
                 defaults={"x": coordinate[0], "y": coordinate[1]},
             )
+            
     return coordinates_dict

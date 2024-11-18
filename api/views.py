@@ -9,58 +9,66 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from segment_anything import SamPredictor, sam_model_registry
-from api.models import Coordinate, ImageModel
-from api.serializers import ImageModelSerializer, CoordinateSerializer
+from api.models import Coordinate, Project, ImageModel
+from api.serializers import CoordinateSerializer, ProjectSerializer, ImageModelSerializer
+from rest_framework.permissions import IsAuthenticated
 
 sam = None
 predictor = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+class ProjectViewSet(viewsets.ModelViewSet):
+    queryset = Project.objects.all()
+    serializer_class = ProjectSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Project.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 class ImageViewSet(viewsets.ModelViewSet):
     queryset = ImageModel.objects.all()
     serializer_class = ImageModelSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
-    filter_backends = [filters.SearchFilter]
-    search_fields = ["folder_path"]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return ImageModel.objects.filter(project__user=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        folder_path = request.data.get("folder_path", "default_folder")
+        project_id = request.data.get("project_id")
+        is_label = request.data.get("is_label", False)
+
+        try:
+            project = Project.objects.get(id=project_id, user=request.user)
+        except Project.DoesNotExist:
+            return Response(
+                {'error': 'Project not found or you do not have permission to access it.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
         images = request.FILES.getlist("images")
         image_data = []
 
         for image in images:
-            relative_path = os.path.join(folder_path, image.name)
-            full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
-
-            image_exists = ImageModel.objects.filter(image=relative_path).first()
-
-            if image_exists:
-                image_record = image_exists
-            else:
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                with open(full_path, "wb+") as destination:
-                    for chunk in image.chunks():
-                        destination.write(chunk)
-
-                image_record = ImageModel.objects.create(
-                    image=relative_path,
-                    folder_path=folder_path,
-                )
+            image_record = ImageModel.objects.create(
+                image=image,
+                is_label=is_label,
+                project=project,
+            )
             coordinates_qs = image_record.coordinates.all()
             coordinates = [{"x": coord.x, "y": coord.y} for coord in coordinates_qs]
             coordinates = coordinates[0] if coordinates else []
             image_data.append(
                 {
                     "id": image_record.id,
-                    "url": request.build_absolute_uri(
-                        settings.MEDIA_URL + relative_path
-                    ),
+                    "url": request.build_absolute_uri(image_record.image.url),
                     "filename": image.name,
                     "coordinates": coordinates,
                 }
             )
-
         return Response({"images": image_data})
 
     @action(detail=False, methods=["get"])
@@ -152,7 +160,72 @@ class ImageViewSet(viewsets.ModelViewSet):
         )
 
         binary_mask = masks[0].astype(np.uint8)
-        return Response({"mask": binary_mask.tolist()})
+
+        # Get complexity parameter
+        complexity = request.query_params.get('complexity', 50)
+        try:
+            complexity = float(complexity)
+            complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
+        except ValueError:
+            complexity = 50  # Default value if conversion fails
+
+        # Generate polygons from mask using the provided method
+        mask = binary_mask.astype(np.uint8)
+        mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+        contours = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1))
+        contours = contours[0] if len(contours) == 2 else contours[1]
+
+        polygons = []
+        for contour in contours:
+            arc_length = cv2.arcLength(contour, True)
+            # Map complexity to epsilon
+            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (complexity / 100.0) * 0.001 * arc_length
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            # Convert to list of (x, y) coordinates
+            polygon = approx[:, 0, :].tolist()
+            polygons.append(polygon)
+
+        return Response({"mask": binary_mask.tolist(), "polygons": polygons})
+
+    @action(detail=False, methods=["post"])
+    def generate_polygon(self, request):
+        data = request.data
+        mask = data.get("mask")
+        if mask is None:
+            return Response({"error": "No mask provided."}, status=400)
+
+        complexity = request.query_params.get('complexity', 50)
+        try:
+            complexity = float(complexity)
+            complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
+        except ValueError:
+            complexity = 50  # Default value if conversion fails
+
+        # Convert mask to numpy array
+        binary_mask = np.array(mask, dtype=np.uint8)
+        if len(binary_mask.shape) != 2:
+            return Response({"error": "Invalid mask format."}, status=400)
+
+        # Threshold the mask to ensure binary
+        _, binary_mask = cv2.threshold(binary_mask, 0.5, 1, cv2.THRESH_BINARY)
+
+        # Generate polygons from mask using the provided method
+        mask = binary_mask.astype(np.uint8)
+        mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+        contours = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1))
+        contours = contours[0] if len(contours) == 2 else contours[1]
+
+        polygons = []
+        for contour in contours:
+            arc_length = cv2.arcLength(contour, True)
+            # Map complexity to epsilon
+            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (complexity / 100.0) * 0.001 * arc_length
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            # Convert to list of (x, y) coordinates
+            polygon = approx[:, 0, :].tolist()
+            polygons.append(polygon)
+
+        return Response({"polygons": polygons})
 
     def load_model(self):
         global sam, predictor
