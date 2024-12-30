@@ -10,17 +10,24 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from segment_anything import SamPredictor, sam_model_registry
 from api.models import Coordinate, Project, ImageModel
-from api.serializers import CoordinateSerializer, ProjectSerializer, ImageModelSerializer
+from api.serializers import (
+    CoordinateSerializer,
+    ProjectSerializer,
+    ImageModelSerializer,
+)
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 sam = None
 predictor = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 class ProjectViewSet(viewsets.ModelViewSet):
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
     permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
 
     def get_queryset(self):
         return Project.objects.filter(user=self.request.user)
@@ -28,11 +35,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+
 class ImageViewSet(viewsets.ModelViewSet):
     queryset = ImageModel.objects.all()
     serializer_class = ImageModelSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
 
     def get_queryset(self):
         return ImageModel.objects.filter(project__user=self.request.user)
@@ -45,31 +54,28 @@ class ImageViewSet(viewsets.ModelViewSet):
             project = Project.objects.get(id=project_id, user=request.user)
         except Project.DoesNotExist:
             return Response(
-                {'error': 'Project not found or you do not have permission to access it.'},
-                status=status.HTTP_404_NOT_FOUND
+                {
+                    "error": "Project not found or you do not have permission to access it."
+                },
+                status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         images = request.FILES.getlist("images")
-        image_data = []
+        image_records = []
 
         for image in images:
             image_record = ImageModel.objects.create(
                 image=image,
                 is_label=is_label,
                 project=project,
+                original_filename=image.name,
             )
-            coordinates_qs = image_record.coordinates.all()
-            coordinates = [{"x": coord.x, "y": coord.y} for coord in coordinates_qs]
-            coordinates = coordinates[0] if coordinates else []
-            image_data.append(
-                {
-                    "id": image_record.id,
-                    "url": request.build_absolute_uri(image_record.image.url),
-                    "filename": image.name,
-                    "coordinates": coordinates,
-                }
-            )
-        return Response({"images": image_data})
+            image_records.append(image_record)
+
+        serializer = self.get_serializer(
+            image_records, many=True, context={"request": request}
+        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["get"])
     def folder_coordinates(self, request):
@@ -90,7 +96,7 @@ class ImageViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"])
     def save_all_coordinates(self, request):
-        all_coordinates = request.data.get("all_coordinates", [])
+        all_coordinates = request.data
         if not all_coordinates:
             return Response(
                 {"error": "No coordinates provided"},
@@ -162,7 +168,7 @@ class ImageViewSet(viewsets.ModelViewSet):
         binary_mask = masks[0].astype(np.uint8)
 
         # Get complexity parameter
-        complexity = request.query_params.get('complexity', 50)
+        complexity = request.query_params.get("complexity", 50)
         try:
             complexity = float(complexity)
             complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
@@ -172,14 +178,18 @@ class ImageViewSet(viewsets.ModelViewSet):
         # Generate polygons from mask using the provided method
         mask = binary_mask.astype(np.uint8)
         mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-        contours = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1))
+        contours = cv2.findContours(
+            mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1)
+        )
         contours = contours[0] if len(contours) == 2 else contours[1]
 
         polygons = []
         for contour in contours:
             arc_length = cv2.arcLength(contour, True)
             # Map complexity to epsilon
-            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (complexity / 100.0) * 0.001 * arc_length
+            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (
+                complexity / 100.0
+            ) * 0.001 * arc_length
             approx = cv2.approxPolyDP(contour, epsilon, True)
             # Convert to list of (x, y) coordinates
             polygon = approx[:, 0, :].tolist()
@@ -194,7 +204,7 @@ class ImageViewSet(viewsets.ModelViewSet):
         if mask is None:
             return Response({"error": "No mask provided."}, status=400)
 
-        complexity = request.query_params.get('complexity', 50)
+        complexity = request.query_params.get("complexity", 50)
         try:
             complexity = float(complexity)
             complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
@@ -212,14 +222,18 @@ class ImageViewSet(viewsets.ModelViewSet):
         # Generate polygons from mask using the provided method
         mask = binary_mask.astype(np.uint8)
         mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-        contours = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1))
+        contours = cv2.findContours(
+            mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1)
+        )
         contours = contours[0] if len(contours) == 2 else contours[1]
 
         polygons = []
         for contour in contours:
             arc_length = cv2.arcLength(contour, True)
             # Map complexity to epsilon
-            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (complexity / 100.0) * 0.001 * arc_length
+            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (
+                complexity / 100.0
+            ) * 0.001 * arc_length
             approx = cv2.approxPolyDP(contour, epsilon, True)
             # Convert to list of (x, y) coordinates
             polygon = approx[:, 0, :].tolist()
@@ -242,6 +256,8 @@ class ImageViewSet(viewsets.ModelViewSet):
 
 class ModelManagerViewSet(viewsets.ViewSet):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
 
     @action(detail=False, methods=["post"])
     def load_model(self, request):

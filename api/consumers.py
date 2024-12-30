@@ -17,20 +17,18 @@ class ImageConsumer(AsyncWebsocketConsumer):
 
     async def receive(self, text_data):
         data = json.loads(text_data)
-        folder_path = data.get("folder_path")
+        project_id = data.get("project_id")
 
-        if folder_path:
+        if project_id:
             # Fetch image records asynchronously
             image_records = await sync_to_async(
-                lambda: list(ImageModel.objects.filter(folder_path=folder_path))
+                lambda: list(ImageModel.objects.filter(project_id=project_id))
             )()
-            print(image_records[0].pk)
-            print(image_records[0].id)
 
             if not image_records:
                 await self.send(text_data=json.dumps({
                     "status": "error",
-                    "message": f"No images found in folder: {folder_path}"
+                    "message": f"No images found in project: {project_id}"
                 }))
                 return
 

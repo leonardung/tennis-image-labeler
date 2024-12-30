@@ -10,7 +10,7 @@ class CoordinateSerializer(serializers.ModelSerializer):
         fields = ["id", "x", "y", "image_id"]
 
     def get_image_id(self, obj):
-        return obj.image.id 
+        return obj.image.id
 
 
 class ImageModelSerializer(serializers.ModelSerializer):
@@ -18,7 +18,14 @@ class ImageModelSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ImageModel
-        fields = ["id", "image", "uploaded_at", "coordinates", "is_label"]
+        fields = [
+            "id",
+            "image",
+            "uploaded_at",
+            "coordinates",
+            "is_label",
+            "original_filename",
+        ]
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -26,4 +33,4 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Project
-        fields = ['id', 'name', 'type', 'images']
+        fields = ["id", "name", "type", "images"]
