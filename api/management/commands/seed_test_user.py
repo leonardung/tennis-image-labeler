@@ -13,5 +13,8 @@ class Command(BaseCommand):
         if User.objects.filter(username=username).exists():
             self.stdout.write(self.style.WARNING(f"User '{username}' already exists."))
         else:
-            User.objects.create_user(username=username, email=email, password=password)
-            self.stdout.write(self.style.SUCCESS(f"User '{username}' created with password '{password}'."))
+            try:
+                User.objects.create_user(username=username, email=email, password=password, last_login=None)
+                self.stdout.write(self.style.SUCCESS(f"User '{username}' created with password '{password}'."))
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"Failed to create user: {str(e)}"))

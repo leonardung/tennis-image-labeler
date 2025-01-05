@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import torch
+import ffmpeg
 from django.conf import settings
 from django.db import transaction
 from rest_framework import viewsets, status, filters
@@ -9,11 +10,11 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from segment_anything import SamPredictor, sam_model_registry
-from api.models import Coordinate, Project, ImageModel
+from api.models import Coordinate, Project, ImageVideoModel
 from api.serializers import (
     CoordinateSerializer,
     ProjectSerializer,
-    ImageModelSerializer,
+    ImageVideoModelSerializer,
 )
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -37,14 +38,31 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
 
 class ImageViewSet(viewsets.ModelViewSet):
-    queryset = ImageModel.objects.all()
-    serializer_class = ImageModelSerializer
+    queryset = ImageVideoModel.objects.all()
+    serializer_class = ImageVideoModelSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
 
     def get_queryset(self):
-        return ImageModel.objects.filter(project__user=self.request.user)
+        return ImageVideoModel.objects.filter(project__user=self.request.user)
+
+    def _get_video_metadata(self, video_file):
+        """Extract video metadata using ffmpeg"""
+        try:
+            probe = ffmpeg.probe(video_file.temporary_file_path())
+            video_stream = next(
+                (stream for stream in probe['streams'] if stream['codec_type'] == 'video'),
+                None
+            )
+            if video_stream:
+                duration = float(video_stream['duration'])
+                frame_rate = eval(video_stream['r_frame_rate'])  # e.g. '30/1' -> 30.0
+                total_frames = int(float(video_stream['nb_frames']))
+                return duration, frame_rate, total_frames
+        except Exception as e:
+            print(f"Error extracting video metadata: {e}")
+        return None, None, None
 
     def create(self, request, *args, **kwargs):
         project_id = request.data.get("project_id")
@@ -64,11 +82,22 @@ class ImageViewSet(viewsets.ModelViewSet):
         image_records = []
 
         for image in images:
-            image_record = ImageModel.objects.create(
+            # Determine if file is a video
+            file_type = "video" if image.content_type.startswith("video/") else "image"
+            
+            # Extract video metadata if video
+            duration, frame_rate, total_frames = None, None, None
+            if file_type == "video":
+                duration, frame_rate, total_frames = self._get_video_metadata(image)
+            image_record = ImageVideoModel.objects.create(
                 image=image,
                 is_label=is_label,
                 project=project,
                 original_filename=image.name,
+                type=file_type,
+                duration=duration,
+                frame_rate=frame_rate,
+                total_frames=total_frames,
             )
             image_records.append(image_record)
 
@@ -85,7 +114,7 @@ class ImageViewSet(viewsets.ModelViewSet):
                 {"error": "folder_path query parameter is required"}, status=400
             )
 
-        images = ImageModel.objects.filter(folder_path=folder_path)
+        images = ImageVideoModel.objects.filter(folder_path=folder_path)
         all_coordinates = []
         for image in images:
             coordinates = image.coordinates.all()
@@ -114,8 +143,8 @@ class ImageViewSet(viewsets.ModelViewSet):
 
                 # Fetch the image
                 try:
-                    image = ImageModel.objects.get(id=image_id)
-                except ImageModel.DoesNotExist:
+                    image = ImageVideoModel.objects.get(id=image_id)
+                except ImageVideoModel.DoesNotExist:
                     continue
 
                 # Delete existing coordinates for the image

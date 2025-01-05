@@ -3,7 +3,7 @@ import json
 from asgiref.sync import sync_to_async
 import cv2
 import torch
-from api.models import Coordinate, ImageModel
+from api.models import Coordinate, ImageVideoModel
 from ml_models.tennis_ball_detection.model import BallTrackerNet
 from ml_models.tennis_ball_detection.inter_on_video import process_frame
 
@@ -22,7 +22,7 @@ class ImageConsumer(AsyncWebsocketConsumer):
         if project_id:
             # Fetch image records asynchronously
             image_records = await sync_to_async(
-                lambda: list(ImageModel.objects.filter(project_id=project_id))
+                lambda: list(ImageVideoModel.objects.filter(project_id=project_id))
             )()
 
             if not image_records:
