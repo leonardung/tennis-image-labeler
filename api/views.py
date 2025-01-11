@@ -12,7 +12,10 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from segment_anything import SamPredictor, sam_model_registry
-from api.models import Coordinate, Project, ImageModel
+from sam2.build_sam import build_sam2_video_predictor
+from api.models.coordinate import Coordinate
+from api.models.image import ImageModel
+from api.models.project import Project
 from api.serializers import (
     CoordinateSerializer,
     ProjectSerializer,
@@ -49,7 +52,6 @@ class ImageViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return ImageModel.objects.filter(project__user=self.request.user)
-
 
     def create(self, request, *args, **kwargs):
         project_id = request.data.get("project_id")
@@ -258,11 +260,13 @@ class ImageViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 raise e
 
+
 class VideoViewSet(viewsets.ViewSet):
     """
-    Handles video uploads. Extracts frames, saves them to ImageVideoModel,
-    and returns the created frame records.
+    Handles video uploads. Extracts frames with configurable stride and maximum frames,
+    saves them to ImageVideoModel, and returns the created frame records.
     """
+
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
@@ -270,6 +274,8 @@ class VideoViewSet(viewsets.ViewSet):
     def create(self, request, *args, **kwargs):
         project_id = request.data.get("project_id")
         is_label = request.data.get("is_label", False)
+        stride = int(request.data.get("stride", 1))
+        max_frames = int(request.data.get("max_frames", 500))
 
         project = get_object_or_404(Project, id=project_id, user=request.user)
 
@@ -297,18 +303,29 @@ class VideoViewSet(viewsets.ViewSet):
         cap = cv2.VideoCapture(temp_name)
         frame_records = []
         frame_index = 0
+        saved_frames = 0
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break  # no more frames
 
+            # Skip frames based on stride
+            if frame_index % stride != 0:
+                frame_index += 1
+                continue
+
+            # Stop if max_frames limit is reached
+            if saved_frames >= max_frames:
+                break
+
             # Convert the OpenCV frame to bytes
             success, buffer = cv2.imencode(".jpg", frame)
             if not success:
+                frame_index += 1
                 continue
 
-            frame_name = f"frame_{frame_index}.jpg"
+            frame_name = f"frame_{saved_frames}.jpg"
             frame_content = ContentFile(buffer.tobytes(), name=frame_name)
 
             frame_model = ImageModel.objects.create(
@@ -318,6 +335,7 @@ class VideoViewSet(viewsets.ViewSet):
                 original_filename=frame_name,
             )
             frame_records.append(frame_model)
+            saved_frames += 1
             frame_index += 1
 
         cap.release()
@@ -326,6 +344,8 @@ class VideoViewSet(viewsets.ViewSet):
             frame_records, many=True, context={"request": request}
         )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
 class ModelManagerViewSet(viewsets.ViewSet):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     permission_classes = [IsAuthenticated]

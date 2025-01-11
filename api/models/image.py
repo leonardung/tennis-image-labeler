@@ -4,23 +4,6 @@ import os
 from io import BytesIO
 from django.db import models
 from django.core.files.base import ContentFile
-from django.contrib.auth.models import User
-
-
-class Project(models.Model):
-    PROJECT_TYPE_CHOICES = [
-        ("point_coordinate", "Point Coordinate"),
-        ("multi_point_coordinate", "Multi Point Coordinate"),
-        ("bounding_box", "Bounding Box"),
-        ("segmentation", "Segmentation"),
-        ("video_tracking_segmentation", "Video Tracking Segmentation"),
-    ]
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="projects")
-    name = models.CharField(max_length=255)
-    type = models.CharField(max_length=30, choices=PROJECT_TYPE_CHOICES)
-
-    def __str__(self):
-        return f"{self.name} ({self.type})"
 
 
 def image_upload_path(instance, filename):
@@ -80,7 +63,7 @@ class ImageModel(models.Model):
 
         # Get the current size
         height, width = cv_image.shape[:2]
-        max_dimension = 200
+        max_dimension = 100
 
         # Determine the scale factor such that the larger side = 200 (if needed)
         max_side = max(width, height)
@@ -112,19 +95,3 @@ class ImageModel(models.Model):
         self.thumbnail.save(
             thumb_filename, ContentFile(thumb_io.getvalue()), save=False
         )
-
-
-class Coordinate(models.Model):
-    image = models.ForeignKey(
-        ImageModel,
-        related_name="coordinates",
-        on_delete=models.CASCADE,
-    )
-    x = models.FloatField()
-    y = models.FloatField()
-
-    def __str__(self):
-        return f"Coordinate ({self.x}, {self.y}) for {self.image}"
-
-    class Meta:
-        unique_together = ("image", "x", "y")

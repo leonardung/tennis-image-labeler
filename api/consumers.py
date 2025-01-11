@@ -3,7 +3,8 @@ import json
 from asgiref.sync import sync_to_async
 import cv2
 import torch
-from api.models import Coordinate, ImageModel
+from api.models.coordinate import Coordinate
+from api.models.image import ImageModel
 from ml_models.tennis_ball_detection.model import BallTrackerNet
 from ml_models.tennis_ball_detection.inter_on_video import process_frame
 

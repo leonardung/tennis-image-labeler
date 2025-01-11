@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from api.models import ImageModel, Coordinate, Project
+
+from api.models.coordinate import Coordinate
+from api.models.image import ImageModel
+from api.models.project import Project
 
 
 class CoordinateSerializer(serializers.ModelSerializer):

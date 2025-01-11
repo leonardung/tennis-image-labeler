@@ -4,7 +4,9 @@ import shutil
 from django.conf import settings
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
-from .models import ImageModel, Project
+
+from api.models.image import ImageModel
+from api.models.project import Project
 
 
 @receiver(post_delete, sender=ImageModel)

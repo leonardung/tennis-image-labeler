@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
+from django.utils import timezone
 
 
 class Command(BaseCommand):
@@ -14,7 +15,16 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"User '{username}' already exists."))
         else:
             try:
-                User.objects.create_user(username=username, email=email, password=password, last_login=None)
-                self.stdout.write(self.style.SUCCESS(f"User '{username}' created with password '{password}'."))
+                User.objects.create_user(
+                    username=username,
+                    email=email,
+                    password=password,
+                    last_login=timezone.now(),
+                )
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"User '{username}' created with password '{password}'."
+                    )
+                )
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"Failed to create user: {str(e)}"))
