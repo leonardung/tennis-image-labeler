@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from api.models import ImageVideoModel, Coordinate, Project
+from api.models import ImageModel, Coordinate, Project
 
 
 class CoordinateSerializer(serializers.ModelSerializer):
@@ -13,27 +13,24 @@ class CoordinateSerializer(serializers.ModelSerializer):
         return obj.image.id
 
 
-class ImageVideoModelSerializer(serializers.ModelSerializer):
+class ImageModelSerializer(serializers.ModelSerializer):
     coordinates = CoordinateSerializer(many=True, read_only=True)
 
     class Meta:
-        model = ImageVideoModel
+        model = ImageModel
         fields = [
             "id",
             "image",
+            "thumbnail",
             "uploaded_at",
             "coordinates",
             "is_label",
             "original_filename",
-            "type",
-            "duration",
-            "frame_rate",
-            "total_frames",
         ]
 
 
 class ProjectSerializer(serializers.ModelSerializer):
-    images = ImageVideoModelSerializer(many=True, read_only=True)
+    images = ImageModelSerializer(many=True, read_only=True)
 
     class Meta:
         model = Project
