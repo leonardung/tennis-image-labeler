@@ -14,11 +14,16 @@ def thumbnail_upload_path(instance, filename):
     return f"projects/{instance.project.id}/thumbnails/{filename}"
 
 
+def mask_upload_path(instance, filename):
+    return f"projects/{instance.project.id}/masks/{filename}"
+
+
 class ImageModel(models.Model):
     image = models.ImageField(upload_to=image_upload_path)
     thumbnail = models.ImageField(
         upload_to=thumbnail_upload_path, blank=True, null=True
     )
+    mask = models.ImageField(upload_to=mask_upload_path, blank=True, null=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
     is_label = models.BooleanField(default=False)
     project = models.ForeignKey(

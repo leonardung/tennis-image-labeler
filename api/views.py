@@ -3,7 +3,8 @@ import cv2
 from django.shortcuts import get_object_or_404
 import numpy as np
 import torch
-import ffmpeg
+import io
+from PIL import Image
 import tempfile
 from django.conf import settings
 from django.db import transaction
@@ -13,6 +14,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from segment_anything import SamPredictor, sam_model_registry
 from sam2.build_sam import build_sam2_video_predictor
+from sam2.sam2_video_predictor import SAM2VideoPredictor
 from api.models.coordinate import Coordinate
 from api.models.image import ImageModel
 from api.models.project import Project
@@ -49,6 +51,10 @@ class ImageViewSet(viewsets.ModelViewSet):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
+    sam_model: SAM2VideoPredictor = None
+    inference_state = None
+
+    torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 
     def get_queryset(self):
         return ImageModel.objects.filter(project__user=self.request.user)
@@ -139,124 +145,109 @@ class ImageViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def generate_mask(self, request, pk=None):
-        image = self.get_object()
-        global sam, predictor
-        if sam is None:
+        if torch.cuda.get_device_properties(0).major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        image: ImageModel = self.get_object()
+        if self.__class__.sam_model is None:
             self.load_model()
+            self.__class__.inference_state = self.__class__.sam_model.init_state(
+                video_path=f"{settings.MEDIA_ROOT}/projects/{image.project.pk}/images"
+            )
         data = request.data
         coordinates = data.get("coordinates")
-        prev_mask = data.get("mask_input")
-
-        image_path = image.image.path
-        img = cv2.imread(image_path)
-        predictor.set_image(img)
-
         input_points = np.array([[coord["x"], coord["y"]] for coord in coordinates])
         input_labels = np.array(
             [1 if coord.get("include", True) else 0 for coord in coordinates]
         )
-
-        mask_input = None
-        if prev_mask:
-            mask_input = np.array(prev_mask, dtype=np.float32)
-            mask_input = cv2.resize(
-                mask_input, (256, 256), interpolation=cv2.INTER_LINEAR
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _, out_obj_ids, out_mask_logits = (
+                self.__class__.sam_model.add_new_points_or_box(
+                    inference_state=self.__class__.inference_state,
+                    frame_idx=int(image.image.name.split(".jpg")[0].split("/")[-1]),
+                    obj_id=0,
+                    points=input_points,
+                    labels=input_labels,
+                )
             )
-            mask_input = np.expand_dims(mask_input, axis=0)
-            mask_input = mask_input.astype(np.uint8)
-
-        masks, _, _ = predictor.predict(
-            point_coords=input_points,
-            point_labels=input_labels,
-            mask_input=mask_input if mask_input is not None else None,
-            multimask_output=False,
+        binary_mask = (out_mask_logits[0] > 0.0).cpu().numpy()[0]
+        mask_image = Image.fromarray((binary_mask * 255).astype(np.int8), mode="L")
+        temp_buffer = io.BytesIO()
+        mask_image.save(temp_buffer, format="PNG")
+        temp_buffer.seek(0)
+        if image.mask:
+            image.mask.delete(save=False)
+        image.mask.save(
+            image.image.name.split(".jpg")[0].split("/")[-1] + ".png",
+            ContentFile(temp_buffer.read()),
+            save=True,  # This will write to disk and update the model
         )
+        self.propagate_mask(request)
 
-        binary_mask = masks[0].astype(np.uint8)
+        return Response({"mask": binary_mask.astype(np.int8).tolist()})
 
-        # Get complexity parameter
-        complexity = request.query_params.get("complexity", 50)
-        try:
-            complexity = float(complexity)
-            complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
-        except ValueError:
-            complexity = 50  # Default value if conversion fails
+    @action(detail=True, methods=["post"])
+    def propagate_mask(self, request, pk=None):
+        current_image = self.get_object()
+        project = current_image.project
+        project_images = ImageModel.objects.filter(project=project)
+        video_segments = {}
+        if torch.cuda.get_device_properties(0).major >= 8:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
-        # Generate polygons from mask using the provided method
-        mask = binary_mask.astype(np.uint8)
-        mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-        contours = cv2.findContours(
-            mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1)
-        )
-        contours = contours[0] if len(contours) == 2 else contours[1]
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            for (
+                out_frame_idx,
+                out_obj_ids,
+                out_mask_logits,
+            ) in self.sam_model.propagate_in_video(
+                self.inference_state, start_frame_idx=0
+            ):
+                masks = {
+                    out_obj_id: (out_mask_logits[i] > 0.0)
+                    .squeeze()
+                    .cpu()
+                    .numpy()
+                    .astype(np.int8)
+                    for i, out_obj_id in enumerate(out_obj_ids)
+                }
+                video_segments[out_frame_idx] = masks
+                matching_image = project_images.filter(
+                    image__endswith=f"{out_frame_idx:05d}.jpg"
+                ).first()
+                if not matching_image:
+                    continue
+                for i, out_obj_id in enumerate(out_obj_ids):
+                    binary_mask = (out_mask_logits[i] > 0.0).squeeze().cpu().numpy()
+                    mask_image = Image.fromarray(
+                        (binary_mask * 255).astype(np.uint8), mode="L"
+                    )
+                    temp_buffer = io.BytesIO()
+                    mask_image.save(temp_buffer, format="PNG")
+                    temp_buffer.seek(0)
+                    # filename = f"mask_{out_frame_idx:05d}.png"
+                    # if len(out_obj_ids) > 1:
+                    #     filename = f"mask_{out_frame_idx:05d}_{out_obj_id}.png"
+                    if matching_image.mask:
+                        matching_image.mask.delete(save=False)
+                    matching_image.mask.save(
+                        matching_image.image.name.split(".jpg")[0].split("/")[-1] + ".png",
+                        ContentFile(temp_buffer.read()),
+                        save=True,  
+                    )
 
-        polygons = []
-        for contour in contours:
-            arc_length = cv2.arcLength(contour, True)
-            # Map complexity to epsilon
-            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (
-                complexity / 100.0
-            ) * 0.001 * arc_length
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            # Convert to list of (x, y) coordinates
-            polygon = approx[:, 0, :].tolist()
-            polygons.append(polygon)
+        return Response({"detail": "All masks have been propagated and saved in one pass."})
 
-        return Response({"mask": binary_mask.tolist(), "polygons": polygons})
-
-    @action(detail=False, methods=["post"])
-    def generate_polygon(self, request):
-        data = request.data
-        mask = data.get("mask")
-        if mask is None:
-            return Response({"error": "No mask provided."}, status=400)
-
-        complexity = request.query_params.get("complexity", 50)
-        try:
-            complexity = float(complexity)
-            complexity = max(0, min(complexity, 100))  # Ensure it's within [0, 100]
-        except ValueError:
-            complexity = 50  # Default value if conversion fails
-
-        # Convert mask to numpy array
-        binary_mask = np.array(mask, dtype=np.uint8)
-        if len(binary_mask.shape) != 2:
-            return Response({"error": "Invalid mask format."}, status=400)
-
-        # Threshold the mask to ensure binary
-        _, binary_mask = cv2.threshold(binary_mask, 0.5, 1, cv2.THRESH_BINARY)
-
-        # Generate polygons from mask using the provided method
-        mask = binary_mask.astype(np.uint8)
-        mask = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-        contours = cv2.findContours(
-            mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE, offset=(-1, -1)
-        )
-        contours = contours[0] if len(contours) == 2 else contours[1]
-
-        polygons = []
-        for contour in contours:
-            arc_length = cv2.arcLength(contour, True)
-            # Map complexity to epsilon
-            epsilon = ((100 - complexity) / 100.0) * 0.1 * arc_length + (
-                complexity / 100.0
-            ) * 0.001 * arc_length
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            # Convert to list of (x, y) coordinates
-            polygon = approx[:, 0, :].tolist()
-            polygons.append(polygon)
-
-        return Response({"polygons": polygons})
 
     def load_model(self):
-        global sam, predictor
-        if sam is None:
+        if self.__class__.sam_model is None:
             try:
-                sam_checkpoint = "./ml_models/sam_models/sam_vit_h_4b8939.pth"
-                model_type = "vit_h"
-                sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-                sam.to(device=device)
-                predictor = SamPredictor(sam)
+                sam_checkpoint = "./ml_models/sam_models/sam2.1_hiera_large.pt"
+                model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+                self.__class__.sam_model = build_sam2_video_predictor(
+                    model_cfg, sam_checkpoint
+                )
             except Exception as e:
                 raise e
 
@@ -325,7 +316,7 @@ class VideoViewSet(viewsets.ViewSet):
                 frame_index += 1
                 continue
 
-            frame_name = f"frame_{saved_frames}.jpg"
+            frame_name = f"{saved_frames:05d}.jpg"
             frame_content = ContentFile(buffer.tobytes(), name=frame_name)
 
             frame_model = ImageModel.objects.create(

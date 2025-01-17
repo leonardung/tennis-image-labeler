@@ -25,6 +25,7 @@ class ImageModelSerializer(serializers.ModelSerializer):
             "id",
             "image",
             "thumbnail",
+            "mask",
             "uploaded_at",
             "coordinates",
             "is_label",
