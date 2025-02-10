@@ -54,7 +54,7 @@ class ImageViewSet(viewsets.ModelViewSet):
     sam_model: SAM2VideoPredictor = None
     inference_state = None
 
-    torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+    torch.autocast(device_type=device, dtype=torch.bfloat16).__enter__()
 
     def get_queryset(self):
         return ImageModel.objects.filter(project__user=self.request.user)
@@ -145,7 +145,7 @@ class ImageViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def generate_mask(self, request, pk=None):
-        if torch.cuda.get_device_properties(0).major >= 8:
+        if device == "cuda" and torch.cuda.get_device_properties(0).major >= 8:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
         image: ImageModel = self.get_object()
@@ -160,7 +160,18 @@ class ImageViewSet(viewsets.ModelViewSet):
         input_labels = np.array(
             [1 if coord.get("include", True) else 0 for coord in coordinates]
         )
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        # delete existing coordinates
+        image.coordinates.all().delete()
+        # Create Coordinate objects
+        for i, coord in enumerate(coordinates):
+            Coordinate.objects.create(
+                image=image,
+                x=coord["x"],
+                y=coord["y"],
+                include=coord.get("include", True),
+            )
+
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
             _, out_obj_ids, out_mask_logits = (
                 self.__class__.sam_model.add_new_points_or_box(
                     inference_state=self.__class__.inference_state,
@@ -182,20 +193,21 @@ class ImageViewSet(viewsets.ModelViewSet):
             ContentFile(temp_buffer.read()),
             save=True,  # This will write to disk and update the model
         )
-
-        return Response({"mask": binary_mask.astype(np.int8).tolist()})
+        # return image object with mask
+        serializer = ImageModelSerializer(image, context={"request": request})
+        return Response(serializer.data)
 
     @action(detail=False, methods=["post"])
     def propagate_mask(self, request):
-        project = request.data.get('project_id')
+        project = request.data.get("project_id")
         print(project)
         project_images = ImageModel.objects.filter(project=project)
         video_segments = {}
-        if torch.cuda.get_device_properties(0).major >= 8:
+        if device == "cuda" and torch.cuda.get_device_properties(0).major >= 8:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
             for (
                 out_frame_idx,
                 out_obj_ids,
@@ -237,26 +249,42 @@ class ImageViewSet(viewsets.ModelViewSet):
                         save=True,
                     )
 
-        return Response(
-            {"detail": "All masks have been propagated and saved in one pass."}
+        # return all images with masks
+        serializer = ImageModelSerializer(
+            project_images, many=True, context={"request": request}
         )
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"])
     def unload_model(self, request):
         if self.__class__.sam_model is not None:
             self.__class__.sam_model = None
-            torch.cuda.empty_cache()
+            if device == "cuda":
+                torch.cuda.empty_cache()
             return Response({"message": "Model unloaded successfully"})
         else:
             return Response({"message": "Model is not loaded"})
 
+    @action(detail=True, methods=["delete"])
+    def delete_mask(self, request, pk=None):
+        image: ImageModel = self.get_object()
+        if image.mask:
+            image.mask.delete(save=True)
+        return Response({"detail": "Mask has been deleted."})
+
+    @action(detail=True, methods=["delete"])
+    def delete_coordinates(self, request, pk=None):
+        image: ImageModel = self.get_object()
+        image.coordinates.all().delete()
+        return Response({"detail": "Coordinates have been deleted."})
+
     def load_model(self):
         if self.__class__.sam_model is None:
             try:
-                sam_checkpoint = "./ml_models/sam_models/sam2.1_hiera_large.pt"
-                model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+                sam_checkpoint = "./ml_models/sam_models/sam2.1_hiera_small.pt"
+                model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
                 self.__class__.sam_model = build_sam2_video_predictor(
-                    model_cfg, sam_checkpoint
+                    model_cfg, sam_checkpoint, device=device
                 )
             except Exception as e:
                 raise e
@@ -376,7 +404,8 @@ class ModelManagerViewSet(viewsets.ViewSet):
         if sam is not None:
             sam = None
             predictor = None
-            torch.cuda.empty_cache()
+            if device == "cuda":
+                torch.cuda.empty_cache()
             return Response({"message": "Model unloaded successfully"})
         else:
             return Response({"message": "Model is not loaded"})

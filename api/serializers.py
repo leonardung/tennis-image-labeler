@@ -10,7 +10,7 @@ class CoordinateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Coordinate
-        fields = ["id", "x", "y", "image_id"]
+        fields = ["id", "x", "y", "include", "image_id"]
 
     def get_image_id(self, obj):
         return obj.image.id
