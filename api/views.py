@@ -182,14 +182,13 @@ class ImageViewSet(viewsets.ModelViewSet):
             ContentFile(temp_buffer.read()),
             save=True,  # This will write to disk and update the model
         )
-        self.propagate_mask(request)
 
         return Response({"mask": binary_mask.astype(np.int8).tolist()})
 
-    @action(detail=True, methods=["post"])
-    def propagate_mask(self, request, pk=None):
-        current_image = self.get_object()
-        project = current_image.project
+    @action(detail=False, methods=["post"])
+    def propagate_mask(self, request):
+        project = request.data.get('project_id')
+        print(project)
         project_images = ImageModel.objects.filter(project=project)
         video_segments = {}
         if torch.cuda.get_device_properties(0).major >= 8:
@@ -232,13 +231,24 @@ class ImageViewSet(viewsets.ModelViewSet):
                     if matching_image.mask:
                         matching_image.mask.delete(save=False)
                     matching_image.mask.save(
-                        matching_image.image.name.split(".jpg")[0].split("/")[-1] + ".png",
+                        matching_image.image.name.split(".jpg")[0].split("/")[-1]
+                        + ".png",
                         ContentFile(temp_buffer.read()),
-                        save=True,  
+                        save=True,
                     )
 
-        return Response({"detail": "All masks have been propagated and saved in one pass."})
+        return Response(
+            {"detail": "All masks have been propagated and saved in one pass."}
+        )
 
+    @action(detail=False, methods=["get"])
+    def unload_model(self, request):
+        if self.__class__.sam_model is not None:
+            self.__class__.sam_model = None
+            torch.cuda.empty_cache()
+            return Response({"message": "Model unloaded successfully"})
+        else:
+            return Response({"message": "Model is not loaded"})
 
     def load_model(self):
         if self.__class__.sam_model is None:
