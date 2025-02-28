@@ -164,4 +164,4 @@ cython_debug/
 #custom
 
 media
-ml_models/sam_models/
+ml_models/sam_models/*.pt
