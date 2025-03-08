@@ -44,6 +44,39 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
+    @action(detail=True, methods=["delete"])
+    def delete_masks(self, request, pk=None):
+        """
+        Deletes the mask files for all images associated with this project.
+        """
+        project = self.get_object()
+        project_images = ImageModel.objects.filter(project=project)
+        count = 0
+        for image in project_images:
+            if image.mask:
+                image.mask.delete(save=True)
+                count += 1
+        return Response(
+            {"detail": f"Deleted masks for {count} images in the project."},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["delete"])
+    def delete_coordinates(self, request, pk=None):
+        """
+        Deletes all coordinates associated with images in this project.
+        """
+        project = self.get_object()
+        project_images = ImageModel.objects.filter(project=project)
+        total_deleted = 0
+        for image in project_images:
+            deleted, _ = image.coordinates.all().delete()
+            total_deleted += deleted
+        return Response(
+            {"detail": f"Deleted {total_deleted} coordinate entries from the project."},
+            status=status.HTTP_200_OK,
+        )
+
 
 class ImageViewSet(viewsets.ModelViewSet):
     queryset = ImageModel.objects.all()
@@ -200,7 +233,6 @@ class ImageViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"])
     def propagate_mask(self, request):
         project = request.data.get("project_id")
-        print(project)
         project_images = ImageModel.objects.filter(project=project)
         video_segments = {}
         if device == "cuda" and torch.cuda.get_device_properties(0).major >= 8:
@@ -248,6 +280,7 @@ class ImageViewSet(viewsets.ModelViewSet):
                         ContentFile(temp_buffer.read()),
                         save=True,
                     )
+            self.sam_model.reset_state(self.inference_state)
 
         # return all images with masks
         serializer = ImageModelSerializer(
